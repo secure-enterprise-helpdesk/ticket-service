@@ -9,17 +9,20 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @FeignClient(name = "user-service", url = "${services.user-service.url}")
-@RequestMapping("/users/admin")
 public interface UserService {
-    @PreAuthorize("hasRole('Manager')")
-    @PutMapping("/update")
-    public ResponseEntity<String> update(@RequestParam String  userId, @RequestParam String role);
+
+    String ADMIN_BASE = "/users/admin";
 
     @PreAuthorize("hasRole('Manager')")
-    @GetMapping("/agents")
-    public ResponseEntity<List<CreateUserProfileRequest>> getAgents();
+    @PutMapping(ADMIN_BASE + "/update")
+    ResponseEntity<String> update(@RequestParam String userId, @RequestParam String role);
+
+    @GetMapping("/users/internal/agents")
+    ResponseEntity<List<CreateUserProfileRequest>> getAgents(
+            @RequestHeader("Authorization") String authorization
+    );
 
     @PreAuthorize("hasRole('Agent', 'Manager')")
-    @GetMapping("/employees")
-    public ResponseEntity<List<CreateUserProfileRequest>> getEmployees();
+    @GetMapping(ADMIN_BASE + "/employees")
+    ResponseEntity<List<CreateUserProfileRequest>> getEmployees();
 }

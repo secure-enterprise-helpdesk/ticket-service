@@ -4,7 +4,9 @@ import enterprise.ticket_service.dto.GlobalReq;
 import enterprise.ticket_service.dto.Request;
 import enterprise.ticket_service.entity.Ticket;
 import enterprise.ticket_service.entity.TicketComment;
+import enterprise.ticket_service.entity.TicketHistory;
 import enterprise.ticket_service.service.TicketService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -13,11 +15,11 @@ import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.*;
 
-@Controller
+@RestController
 @RequestMapping("/tickets")
+@RequiredArgsConstructor
 public class TicketController {
 
-    @Autowired
     private TicketService ticketService;
 
     @PostMapping("/create")
@@ -50,8 +52,8 @@ public class TicketController {
         return ticketService.viewTicketComments(ticketNumber, authentication, pageable);
     }
 
-    @RequestMapping("/delete")
-    public String deleteTicket() {
-        return "delete_ticket";
+    @GetMapping("/history")
+    public ResponseEntity<Page<TicketHistory>> viewTicketHistory(@RequestParam String ticketNumber, Authentication authentication, Pageable pageable) {
+        return ticketService.viewTicketHistory(ticketNumber, authentication, pageable);
     }
 }

@@ -19,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
@@ -27,136 +28,145 @@ import java.util.UUID;
 public class TicketService {
 
     private final TicketRepository ticketRepository;
-    @Autowired
-    private TicketHistoryRepository ticketHistoryRepository;
-    @Autowired
-    private TicketCommentRepository ticketCommentRepository;
+    private final TicketHistoryRepository ticketHistoryRepository;
+    private final TicketCommentRepository ticketCommentRepository;
     private final TicketMapper ticketMapper;
 
-    public ResponseEntity<String> createTicket(
-            Request request,
-            Authentication authentication) {
-
+    @Transactional
+    public ResponseEntity<String> createTicket(Request request, Authentication authentication) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
 
         Ticket ticket = ticketMapper.toTicket(request);
-
         ticket.setCreatedBy(userId);
         ticket.setStatus(TicketStatus.OPEN);
         ticket.setPriority(Priority.MEDIUM);
         ticket.setTicketNumber("TCK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
 
         ticketRepository.save(ticket);
-        ticketHistoryRepository.save(
-                createHistory(ticket.getTicketNumber(), "CREATE", null, TicketStatus.OPEN.toString(), userId)
-        );
+        ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "CREATE", null, TicketStatus.OPEN.name(), userId));
+
         return ResponseEntity.ok("Ticket created successfully, Ticket Number: " + ticket.getTicketNumber());
     }
 
     public ResponseEntity<String> viewTicketById(String ticketNumber, Authentication authentication) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
-
         String userId = jwt.getSubject();
         String role = jwt.getClaimAsString("role");
 
         Ticket ticket = ticketRepository.findByTicketNumber(ticketNumber).orElse(null);
 
-        if ("Employee".equals(role) && (ticket == null || !ticket.getCreatedBy().equals(userId))) {
-            ticket = null;
-        } else if ("Agent".equals(role) && (ticket == null || !ticket.getAssignedTo().equals(userId))) {
-            ticket = null;
-        }
+        if (ticket == null)
+            return ResponseEntity.status(404).body("Ticket not found");
 
-        return ResponseEntity.ok("Tickets: " + ticket);
+        if ("Employee".equals(role) && !ticket.getCreatedBy().equals(userId))
+            return ResponseEntity.status(403).body("You are not authorized to view this ticket");
+
+        if ("Agent".equals(role) && (ticket.getAssignedTo() == null || !ticket.getAssignedTo().equals(userId)))
+            return ResponseEntity.status(403).body("You are not authorized to view this ticket");
+
+        return ResponseEntity.ok("Ticket: " + ticket);
     }
 
     public ResponseEntity<Page<Ticket>> viewTicket(Authentication authentication, Pageable pageable) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
         String role = jwt.getClaimAsString("role");
+
         Page<Ticket> tickets = Page.empty();
-        if ("Employee".equals(role)) {
+
+        if ("Employee".equals(role))
             tickets = ticketRepository.findByCreatedBy(userId, pageable);
-        } else if ("Agent".equals(role)) {
+        else if ("Agent".equals(role))
             tickets = ticketRepository.findByAssignedTo(userId, pageable);
-        }else if ("Manager".equals(role)) {
+        else if ("Manager".equals(role))
             tickets = ticketRepository.findAll(pageable);
-        }
+
         return ResponseEntity.ok(tickets);
     }
 
+    @Transactional
     public ResponseEntity<String> updateTicket(GlobalReq globalReq, Authentication authentication) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
         String role = jwt.getClaimAsString("role");
+
         String ticketNumber = globalReq.getString("ticketNumber");
         String assignedTo = globalReq.getString("assignedTo");
         String status = globalReq.getString("status");
+
         Ticket ticket = ticketRepository.findByTicketNumber(ticketNumber).orElse(null);
-        if (ticket == null) {
-            return ResponseEntity.badRequest().body("Ticket not found");
-        }
+
+        if (ticket == null)
+            return ResponseEntity.status(404).body("Ticket not found");
+
         if ("Manager".equals(role)) {
+
             if (assignedTo != null && !assignedTo.equals(ticket.getAssignedTo())) {
                 String oldAssignedTo = ticket.getAssignedTo();
                 ticket.setAssignedTo(assignedTo);
-                if (ticket.getStatus() == null || ticket.getStatus() == TicketStatus.OPEN) {
+
+                if (ticket.getStatus() == TicketStatus.OPEN) {
                     ticket.setStatus(TicketStatus.ASSIGNED);
+                    ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "STATUS_CHANGE",
+                            TicketStatus.OPEN.name(), TicketStatus.ASSIGNED.name(), userId));
                 }
-                ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "ASSIGNED", oldAssignedTo, assignedTo, userId));
+
+                ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "ASSIGNED",
+                        oldAssignedTo, assignedTo, userId));
             }
 
             if (status != null) {
                 TicketStatus newStatus = parseStatus(status);
-                if (newStatus != null && ticket.getStatus() != newStatus) {
-                    String oldStatus = ticket.getStatus() != null ? ticket.getStatus().name() : null;
+
+                if (newStatus == null)
+                    return ResponseEntity.badRequest().body("Invalid ticket status");
+
+                if (ticket.getStatus() != newStatus) {
+                    TicketStatus currentStatus = ticket.getStatus();
+
+                    if (!isValidTransition(currentStatus, newStatus))
+                        return ResponseEntity.badRequest().body("Invalid status transition: " + currentStatus + " -> " + newStatus);
+
                     ticket.setStatus(newStatus);
-                    ticketHistoryRepository.save(
-                            createHistory(ticket.getTicketNumber(), newStatus.name(), oldStatus, newStatus.name(), userId)
-                    );
+                    ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "STATUS_CHANGE",
+                            currentStatus.name(), newStatus.name(), userId));
                 }
             }
+
         } else if ("Agent".equals(role)) {
-            if (status == null) {
+
+            if (ticket.getAssignedTo() == null || !ticket.getAssignedTo().equals(userId))
+                return ResponseEntity.status(403).body("You are not authorized to update this ticket");
+
+            if (status == null)
                 return ResponseEntity.badRequest().body("Status is required");
-            }
 
             TicketStatus newStatus = parseStatus(status);
-            if (newStatus == null) {
+
+            if (newStatus == null)
                 return ResponseEntity.badRequest().body("Invalid ticket status");
-            }
 
             if (ticket.getStatus() != newStatus) {
-                String oldStatus = ticket.getStatus() != null ? ticket.getStatus().name() : null;
+                TicketStatus currentStatus = ticket.getStatus();
+
+                if (!isValidTransition(currentStatus, newStatus))
+                    return ResponseEntity.badRequest().body("Invalid status transition: " + currentStatus + " -> " + newStatus);
+
                 ticket.setStatus(newStatus);
-                ticketHistoryRepository.save(
-                        createHistory(ticket.getTicketNumber(), newStatus.name(), oldStatus, newStatus.name(), userId)
-                );
+                ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "STATUS_CHANGE",
+                        currentStatus.name(), newStatus.name(), userId));
             }
+
         } else {
             return ResponseEntity.status(403).body("You are not authorized to update this ticket");
         }
+
         ticketRepository.save(ticket);
         return ResponseEntity.ok("Ticket updated successfully");
     }
-    private TicketHistory createHistory(String ticketNumber, String action, String oldValue, String newValue, String changedBy) {
-        TicketHistory ticketHistory = new TicketHistory();
-        ticketHistory.setTicketNumber(ticketNumber);
-        ticketHistory.setAction(action);
-        ticketHistory.setOldValue(oldValue);
-        ticketHistory.setNewValue(newValue);
-        ticketHistory.setChangedBy(changedBy);
-        return ticketHistory;
-    }
 
-    private TicketStatus parseStatus(String statusValue) {
-        if (statusValue == null || statusValue.trim().isEmpty()) {
-            return null;
-        }
-        return TicketStatus.valueOf(statusValue.trim().toUpperCase());
-    }
-
+    @Transactional
     public ResponseEntity<String> commentOnTicket(GlobalReq globalReq, Authentication authentication) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
@@ -167,13 +177,14 @@ public class TicketService {
 
         Ticket ticket = ticketRepository.findByTicketNumber(ticketNumber).orElse(null);
 
-        if (ticket == null) {
-            return ResponseEntity.badRequest().body("Ticket not found");
-        }
-        if ((role.equals("Employee") && !ticket.getCreatedBy().equals(userId)) ||
-                (role.equals("Agent") && !ticket.getAssignedTo().equals(userId))) {
+        if (ticket == null)
+            return ResponseEntity.status(404).body("Ticket not found");
+
+        if ("Employee".equals(role) && !ticket.getCreatedBy().equals(userId))
             return ResponseEntity.status(403).body("You are not authorized to comment on this ticket");
-        }
+
+        if ("Agent".equals(role) && (ticket.getAssignedTo() == null || !ticket.getAssignedTo().equals(userId)))
+            return ResponseEntity.status(403).body("You are not authorized to comment on this ticket");
 
         TicketComment ticketComment = new TicketComment();
         ticketComment.setTicketNumber(ticketNumber);
@@ -185,20 +196,84 @@ public class TicketService {
         return ResponseEntity.ok("Comment added successfully");
     }
 
-    public ResponseEntity<Page<TicketComment>> viewTicketComments(String ticketNumber, Authentication authentication, Pageable pageable) {
+    public ResponseEntity<Page<TicketComment>> viewTicketComments(
+            String ticketNumber, Authentication authentication, Pageable pageable) {
+
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
         String role = jwt.getClaimAsString("role");
+
         Ticket ticket = ticketRepository.findByTicketNumber(ticketNumber).orElse(null);
 
-        if (ticket == null) {
-            return ResponseEntity.badRequest().body(null);
-        }
-        if ((role.equals("Employee") && !ticket.getCreatedBy().equals(userId)) ||
-                (role.equals("Agent") && !ticket.getAssignedTo().equals(userId))) {
+        if (ticket == null)
+            return ResponseEntity.status(404).body(null);
+
+        if ("Employee".equals(role) && !ticket.getCreatedBy().equals(userId))
             return ResponseEntity.status(403).body(null);
+
+        if ("Agent".equals(role) && (ticket.getAssignedTo() == null || !ticket.getAssignedTo().equals(userId)))
+            return ResponseEntity.status(403).body(null);
+
+        Page<TicketComment> comments = ticketCommentRepository.findByTicketNumber(ticketNumber, pageable);
+        return ResponseEntity.ok(comments);
+    }
+
+    public ResponseEntity<Page<TicketHistory>> viewTicketHistory(
+            String ticketNumber, Authentication authentication, Pageable pageable) {
+
+        Jwt jwt = (Jwt) authentication.getPrincipal();
+        String userId = jwt.getSubject();
+        String role = jwt.getClaimAsString("role");
+
+        Ticket ticket = ticketRepository.findByTicketNumber(ticketNumber).orElse(null);
+
+        if (ticket == null)
+            return ResponseEntity.status(404).body(null);
+
+        if ("Employee".equals(role) && !ticket.getCreatedBy().equals(userId))
+            return ResponseEntity.status(403).body(null);
+
+        if ("Agent".equals(role) && (ticket.getAssignedTo() == null || !ticket.getAssignedTo().equals(userId)))
+            return ResponseEntity.status(403).body(null);
+
+        Page<TicketHistory> history = ticketHistoryRepository.findByTicketNumber(ticketNumber, pageable);
+        return ResponseEntity.ok(history);
+    }
+
+    private boolean isValidTransition(TicketStatus current, TicketStatus next) {
+        if (current == null || next == null)
+            return false;
+
+        return switch (current) {
+            case OPEN -> next == TicketStatus.ASSIGNED;
+            case ASSIGNED -> next == TicketStatus.IN_PROGRESS;
+            case IN_PROGRESS -> next == TicketStatus.RESOLVED;
+            case RESOLVED -> next == TicketStatus.CLOSED || next == TicketStatus.REOPENED;
+            case REOPENED -> next == TicketStatus.IN_PROGRESS;
+            case CLOSED -> false;
+        };
+    }
+
+    private TicketStatus parseStatus(String statusValue) {
+        if (statusValue == null || statusValue.trim().isEmpty())
+            return null;
+
+        try {
+            return TicketStatus.valueOf(statusValue.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return null;
         }
-        Page<TicketComment> ticketComments = ticketCommentRepository.findByTicketNumber(ticketNumber, pageable);
-        return ResponseEntity.ok(ticketComments);
+    }
+
+    private TicketHistory createHistory(
+            String ticketNumber, String action, String oldValue, String newValue, String changedBy) {
+
+        TicketHistory history = new TicketHistory();
+        history.setTicketNumber(ticketNumber);
+        history.setAction(action);
+        history.setOldValue(oldValue);
+        history.setNewValue(newValue);
+        history.setChangedBy(changedBy);
+        return history;
     }
 }
