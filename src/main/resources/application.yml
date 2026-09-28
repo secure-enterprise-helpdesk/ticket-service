@@ -1,0 +1,18 @@
+services:
+  user-service:
+    url: http://localhost:8081
+  auth-service:
+    url: http://localhost:8083
+    username: TICKET_SERVICE_AUTH_USERNAME
+    password: TICKET_SERVICE_AUTH_PASSWORD
+
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+
+jwt:
+  issuer: enterprise-auth-service

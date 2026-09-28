@@ -8,6 +8,7 @@ import enterprise.ticket_service.entity.TicketHistory;
 import enterprise.ticket_service.enums.Priority;
 import enterprise.ticket_service.enums.TicketStatus;
 import enterprise.ticket_service.mapper.TicketMapper;
+import enterprise.ticket_service.outbox.service.OutboxService;
 import enterprise.ticket_service.repository.TicketCommentRepository;
 import enterprise.ticket_service.repository.TicketHistoryRepository;
 import enterprise.ticket_service.repository.TicketRepository;
@@ -30,6 +31,7 @@ public class TicketService {
     private final TicketRepository ticketRepository;
     private final TicketHistoryRepository ticketHistoryRepository;
     private final TicketCommentRepository ticketCommentRepository;
+    private final OutboxService outboxService;
     private final TicketMapper ticketMapper;
 
     @Transactional
@@ -45,6 +47,7 @@ public class TicketService {
 
         ticketRepository.save(ticket);
         ticketHistoryRepository.save(createHistory(ticket.getTicketNumber(), "CREATE", null, TicketStatus.OPEN.name(), userId));
+        outboxService.saveTicketCreatedEvent(ticket, userId);
 
         return ResponseEntity.ok("Ticket created successfully, Ticket Number: " + ticket.getTicketNumber());
     }
@@ -162,7 +165,13 @@ public class TicketService {
             return ResponseEntity.status(403).body("You are not authorized to update this ticket");
         }
 
-        ticketRepository.save(ticket);
+       Ticket tk = ticketRepository.save(ticket);
+        if ("Manager".equals(role)){
+            outboxService.saveTicketAssignedEvent(tk,userId);
+        }
+        if ("Agent".equals(role)){
+            outboxService.saveTicketStatusChangedEvent(tk, userId);
+        }
         return ResponseEntity.ok("Ticket updated successfully");
     }
 
@@ -191,7 +200,8 @@ public class TicketService {
         ticketComment.setCommentedBy(userId);
         ticketComment.setComment(comment);
 
-        ticketCommentRepository.save(ticketComment);
+        TicketComment ticketComments=ticketCommentRepository.save(ticketComment);
+        outboxService.saveTicketCommentAddedEvent(ticket, ticketComments, userId);
 
         return ResponseEntity.ok("Comment added successfully");
     }

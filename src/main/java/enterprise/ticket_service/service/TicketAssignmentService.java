@@ -5,8 +5,11 @@ import enterprise.ticket_service.client.user_service.dto.CreateUserProfileReques
 import enterprise.ticket_service.entity.Ticket;
 import enterprise.ticket_service.entity.TicketHistory;
 import enterprise.ticket_service.enums.TicketStatus;
+import enterprise.ticket_service.outbox.service.OutboxService;
 import enterprise.ticket_service.repository.TicketHistoryRepository;
 import enterprise.ticket_service.repository.TicketRepository;
+import lombok.AllArgsConstructor;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -14,24 +17,18 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class TicketAssignmentService {
 
-    @Autowired
-    private UserService userService;
-
-    @Autowired
-    private TicketRepository ticketRepository;
-
-    @Autowired
-    private TicketHistoryRepository ticketHistoryRepository;
-
-    @Autowired
-    private ServiceTokenService serviceTokenService;
+    private final UserService userService;
+    private final TicketRepository ticketRepository;
+    private final TicketHistoryRepository ticketHistoryRepository;
+    private final ServiceTokenService serviceTokenService;
+    private final OutboxService outboxService;
 
     public void assignPendingTickets() {
         String accessToken = serviceTokenService.getToken();
-        List<CreateUserProfileRequest> agentProfiles =
-                userService.getAgents("Bearer " + accessToken).getBody();
+        List<CreateUserProfileRequest> agentProfiles = userService.getAgents("Bearer " + accessToken).getBody();
         if (agentProfiles == null || agentProfiles.isEmpty()) return;
         Map<String, Long> agentWorkloadMap = computeAgentWorkload();
         List<String> unassignedTicketIds = fetchPendingTicketIds();
@@ -73,65 +70,37 @@ public class TicketAssignmentService {
     }
 
     private List<String> fetchPendingTicketIds() {
-
-        return ticketRepository.findPendingTicketNumbers(
-                TicketStatus.OPEN
-        );
+        return ticketRepository.findPendingTicketNumbers(TicketStatus.OPEN);
     }
 
     private void assignTicket(List<AssignmentPair> assignmentPairs) {
-
         assignmentPairs.forEach(pair -> {
-
-            Optional<Ticket> optionalTicket =
-                    ticketRepository.findByTicketNumber(pair.ticketId);
-
+            Optional<Ticket> optionalTicket =ticketRepository.findByTicketNumber(pair.ticketId);
             if (optionalTicket.isPresent()) {
-
                 Ticket ticket = optionalTicket.get();
-
                 ticket.setStatus(TicketStatus.ASSIGNED);
                 ticket.setAssignedTo(pair.agentId);
-
                 ticketRepository.save(ticket);
-
-                ticketHistoryRepository.save(
-                        createHistory(
-                                pair.ticketId,
-                                "ASSIGNED",
-                                "",
-                                pair.agentId,
-                                "SYSTEM"
-                        )
-                );
+                ticketHistoryRepository.save(createHistory(pair.ticketId, "ASSIGNED", "", pair.agentId, "SYSTEM"));
+                outboxService.saveTicketAssignedEvent(ticket,"SYSTEM");
             }
         });
     }
 
-    private TicketHistory createHistory(
-            String ticketNumber,
-            String action,
-            String oldValue,
-            String newValue,
-            String changedBy) {
-
+    private TicketHistory createHistory(String ticketNumber, String action, String oldValue, String newValue, String changedBy) {
         TicketHistory history = new TicketHistory();
-
         history.setTicketNumber(ticketNumber);
         history.setAction(action);
         history.setOldValue(oldValue);
         history.setNewValue(newValue);
         history.setChangedBy(changedBy);
-
         return history;
     }
 }
 
 class AssignmentPair {
-
     String agentId;
     String ticketId;
-
     public AssignmentPair(String agentId, String ticketId) {
         this.agentId = agentId;
         this.ticketId = ticketId;
