@@ -86,7 +86,12 @@ public class OutboxService {
         outboxEventRepository.save(outboxEvent);
     }
 
-    public  void saveTicketStatusChangedEvent(Ticket ticket, String userId) {
+    public void saveTicketStatusChangedEvent(
+            Ticket ticket,
+            String userId,
+            String oldStatus,
+            String newStatus
+    ) {
         UUID eventId = UUID.randomUUID();
         TicketStatusChangedEvent event = TicketStatusChangedEvent.builder()
                 .eventId(eventId)
@@ -97,6 +102,8 @@ public class OutboxService {
                 .createdBy(ticket.getCreatedBy())
                 .ticketId(ticket.getId().toString())
                 .ticketNumber(ticket.getTicketNumber())
+                .oldStatus(oldStatus)
+                .newStatus(newStatus)
                 .build();
 
         OutboxEvent outboxEvent = OutboxEvent.builder()

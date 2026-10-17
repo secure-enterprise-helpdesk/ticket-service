@@ -33,7 +33,7 @@ public class TicketController {
     }
 
     @GetMapping("/view/id")
-    public ResponseEntity<String> viewTicketById(@RequestParam String ticketNumber, Authentication authentication) {
+    public ResponseEntity<Ticket> viewTicketById(@RequestParam String ticketNumber, Authentication authentication) {
         return ticketService.viewTicketById(ticketNumber, authentication);
     }
 

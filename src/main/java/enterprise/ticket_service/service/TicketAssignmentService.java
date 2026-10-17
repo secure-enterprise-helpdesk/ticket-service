@@ -1,6 +1,5 @@
 package enterprise.ticket_service.service;
 
-import enterprise.ticket_service.client.user_service.UserService;
 import enterprise.ticket_service.client.user_service.dto.CreateUserProfileRequest;
 import enterprise.ticket_service.entity.Ticket;
 import enterprise.ticket_service.entity.TicketHistory;
@@ -20,7 +19,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class TicketAssignmentService {
 
-    private final UserService userService;
+    private final ResilientUserService resilientUserService;
     private final TicketRepository ticketRepository;
     private final TicketHistoryRepository ticketHistoryRepository;
     private final ServiceTokenService serviceTokenService;
@@ -28,7 +27,7 @@ public class TicketAssignmentService {
 
     public void assignPendingTickets() {
         String accessToken = serviceTokenService.getToken();
-        List<CreateUserProfileRequest> agentProfiles = userService.getAgents("Bearer " + accessToken).getBody();
+        List<CreateUserProfileRequest> agentProfiles = resilientUserService.getAgents("Bearer " + accessToken);
         if (agentProfiles == null || agentProfiles.isEmpty()) return;
         Map<String, Long> agentWorkloadMap = computeAgentWorkload();
         List<String> unassignedTicketIds = fetchPendingTicketIds();

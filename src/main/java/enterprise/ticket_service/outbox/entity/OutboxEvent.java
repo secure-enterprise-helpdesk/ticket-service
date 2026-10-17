@@ -42,6 +42,8 @@ public class OutboxEvent {
 
     private Instant publishedAt;
 
+    private Instant nextAttemptAt;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private OutboxStatus status;

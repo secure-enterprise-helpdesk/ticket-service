@@ -13,7 +13,7 @@ import enterprise.ticket_service.repository.TicketCommentRepository;
 import enterprise.ticket_service.repository.TicketHistoryRepository;
 import enterprise.ticket_service.repository.TicketRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +22,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -33,6 +34,7 @@ public class TicketService {
     private final TicketCommentRepository ticketCommentRepository;
     private final OutboxService outboxService;
     private final TicketMapper ticketMapper;
+    private final CachedTicketService cachedTicketService;
 
     @Transactional
     public ResponseEntity<String> createTicket(Request request, Authentication authentication) {
@@ -52,23 +54,29 @@ public class TicketService {
         return ResponseEntity.ok("Ticket created successfully, Ticket Number: " + ticket.getTicketNumber());
     }
 
-    public ResponseEntity<String> viewTicketById(String ticketNumber, Authentication authentication) {
+    /*
+     * Authorization is intentionally outside @Cacheable.
+     *
+     * This is important because authorization depends on:
+     * userId + role + ticket ownership/assignment.
+     */
+    public ResponseEntity<Ticket> viewTicketById(String ticketNumber, Authentication authentication) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
         String role = jwt.getClaimAsString("role");
 
-        Ticket ticket = ticketRepository.findByTicketNumber(ticketNumber).orElse(null);
+        Ticket ticket = cachedTicketService.getCachedTicket(ticketNumber);
 
         if (ticket == null)
-            return ResponseEntity.status(404).body("Ticket not found");
+            return ResponseEntity.notFound().build();
 
         if ("Employee".equals(role) && !ticket.getCreatedBy().equals(userId))
-            return ResponseEntity.status(403).body("You are not authorized to view this ticket");
+            return ResponseEntity.status(403).build();
 
         if ("Agent".equals(role) && (ticket.getAssignedTo() == null || !ticket.getAssignedTo().equals(userId)))
-            return ResponseEntity.status(403).body("You are not authorized to view this ticket");
+            return ResponseEntity.status(403).build();
 
-        return ResponseEntity.ok("Ticket: " + ticket);
+        return ResponseEntity.ok(ticket);
     }
 
     public ResponseEntity<Page<Ticket>> viewTicket(Authentication authentication, Pageable pageable) {
@@ -88,7 +96,17 @@ public class TicketService {
         return ResponseEntity.ok(tickets);
     }
 
+    /*
+     * Whenever a ticket is successfully updated,
+     * remove its cached copy.
+     *
+     * Next GET will fetch fresh data from PostgreSQL.
+     */
     @Transactional
+    @CacheEvict(
+            value = "tickets",
+            key = "#globalReq.getString('ticketNumber')"
+    )
     public ResponseEntity<String> updateTicket(GlobalReq globalReq, Authentication authentication) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String userId = jwt.getSubject();
@@ -102,6 +120,9 @@ public class TicketService {
 
         if (ticket == null)
             return ResponseEntity.status(404).body("Ticket not found");
+
+        TicketStatus originalStatus = ticket.getStatus();
+        String originalAssignedTo = ticket.getAssignedTo();
 
         if ("Manager".equals(role)) {
 
@@ -165,12 +186,17 @@ public class TicketService {
             return ResponseEntity.status(403).body("You are not authorized to update this ticket");
         }
 
-       Ticket tk = ticketRepository.save(ticket);
-        if ("Manager".equals(role)){
-            outboxService.saveTicketAssignedEvent(tk,userId);
+        Ticket tk = ticketRepository.save(ticket);
+        if (!Objects.equals(originalAssignedTo, tk.getAssignedTo())) {
+            outboxService.saveTicketAssignedEvent(tk, userId);
         }
-        if ("Agent".equals(role)){
-            outboxService.saveTicketStatusChangedEvent(tk, userId);
+        if (originalStatus != tk.getStatus()) {
+            outboxService.saveTicketStatusChangedEvent(
+                    tk,
+                    userId,
+                    originalStatus.name(),
+                    tk.getStatus().name()
+            );
         }
         return ResponseEntity.ok("Ticket updated successfully");
     }
