@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Sensitive keys and configuration ###
+**/[Pp][Rr][Ii][Vv][Aa][Tt][Ee]*[Kk][Ee][Yy]*
+**/[Pp][Uu][Bb][Ll][Ii][Cc]*[Kk][Ee][Yy]*
+*.pem
+*.pub
+*.key
+*.properties
+application.yml
