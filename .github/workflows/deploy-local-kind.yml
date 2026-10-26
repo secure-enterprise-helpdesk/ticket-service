@@ -1,0 +1,46 @@
+name: Deploy Ticket Service to local Kind
+
+on:
+  push:
+    branches: [dev]
+    paths: ["src/**", "pom.xml", "Dockerfile", ".dockerignore", ".mvn/**", "mvnw", "mvnw.cmd"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-kind-ticket-service
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Windows, X64, helpdesk-kind]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify local Docker and Kubernetes context
+        shell: pwsh
+        run: |
+          docker info --format '{{.ServerVersion}}'
+          if ($LASTEXITCODE -ne 0) { throw "Docker engine is unavailable." }
+          $context = (kubectl config current-context).Trim()
+          if ($LASTEXITCODE -ne 0 -or $context -ne "kind-helpdesk") {
+            throw "kubectl context must be kind-helpdesk; found '$context'."
+          }
+      - name: Build image
+        shell: pwsh
+        run: |
+          docker build -t secureaienterprisehelpdesk-ticket-service:dev-20261024 .
+          if ($LASTEXITCODE -ne 0) { throw "Ticket Service image build failed." }
+      - name: Load image into Kind
+        shell: pwsh
+        run: |
+          kind load docker-image secureaienterprisehelpdesk-ticket-service:dev-20261024 --name helpdesk
+          if ($LASTEXITCODE -ne 0) { throw "Could not load the Ticket Service image." }
+      - name: Roll out Ticket Service
+        shell: pwsh
+        run: |
+          kubectl rollout restart deployment/ticket-service -n helpdesk
+          if ($LASTEXITCODE -ne 0) { throw "Could not restart Ticket Service." }
+          kubectl rollout status deployment/ticket-service -n helpdesk --timeout=300s
+          if ($LASTEXITCODE -ne 0) { throw "Ticket Service rollout failed." }
